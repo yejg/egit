@@ -22,6 +22,9 @@ package org.eclipse.egit.ui.internal.staging;
 import static org.eclipse.egit.ui.internal.CommonUtils.runCommand;
 
 import java.io.File;
+import java.io.IOException;
+import java.io.StringReader;
+import java.nio.charset.Charset;
 import java.text.MessageFormat;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -107,6 +110,7 @@ import org.eclipse.egit.ui.internal.operations.DeletePathsOperationUI;
 import org.eclipse.egit.ui.internal.operations.IgnoreOperationUI;
 import org.eclipse.egit.ui.internal.push.PushMode;
 import org.eclipse.egit.ui.internal.repository.tree.RepositoryTreeNode;
+import org.eclipse.egit.ui.internal.resources.IResourceState.StagingState;
 import org.eclipse.egit.ui.internal.selection.MultiViewerSelectionProvider;
 import org.eclipse.egit.ui.internal.selection.RepositorySelectionProvider;
 import org.eclipse.jface.action.Action;
@@ -203,6 +207,7 @@ import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Display;
 import org.eclipse.swt.widgets.Label;
+import org.eclipse.swt.widgets.MessageBox;
 import org.eclipse.swt.widgets.Text;
 import org.eclipse.swt.widgets.Tree;
 import org.eclipse.swt.widgets.TreeItem;
@@ -238,6 +243,19 @@ import org.eclipse.ui.part.ShowInContext;
 import org.eclipse.ui.part.ViewPart;
 import org.eclipse.ui.progress.IWorkbenchSiteProgressService;
 import org.eclipse.ui.progress.WorkbenchJob;
+
+import com.alibaba.p3c.pmd.lang.java.util.GeneratedCodeUtils;
+import com.google.common.io.Files;
+
+import net.sourceforge.pmd.PMDConfiguration;
+import net.sourceforge.pmd.PMDException;
+import net.sourceforge.pmd.Report;
+import net.sourceforge.pmd.RuleContext;
+import net.sourceforge.pmd.RuleSetFactory;
+import net.sourceforge.pmd.RuleSetNotFoundException;
+import net.sourceforge.pmd.RuleSets;
+import net.sourceforge.pmd.RuleViolation;
+import net.sourceforge.pmd.SourceCodeProcessor;
 
 /**
  * A GitX style staging view with embedded commit dialog.
@@ -4121,7 +4139,102 @@ public class StagingView extends ViewPart
 		return files;
 	}
 
+	private Set<IFile> getStagedFile() {
+		TreeItem[] items = stagedViewer.getTree().getItems();
+		Set<IFile> stagedFileSet = new HashSet<>();
+		if (items != null && items.length > 0) {
+			for (TreeItem treeItem : items) {
+				StagingEntry stagingEntry = (StagingEntry) treeItem.getData();
+				if (!StagingState.REMOVED
+						.equals(stagingEntry.getStagingState())) {
+					stagedFileSet.add(stagingEntry.getFile());
+				}
+			}
+		}
+		return stagedFileSet;
+	}
+
+	private Report checkStagedFile(IFile file) {
+		PMDConfiguration pmdConfiguration = new PMDConfiguration();
+		String chatset = "UTF-8";
+		try {
+			if (file.getCharset() != null) {
+				chatset = file.getCharset();
+			}
+		} catch (CoreException e) {
+			e.printStackTrace();
+		}
+		pmdConfiguration.setSourceEncoding(chatset);
+		pmdConfiguration.setInputPaths(file.getFullPath().toPortableString());
+		RuleContext ruleContext = new RuleContext();
+		ruleContext.setAttribute("eclipseFile", file);
+		Report report = Report.createReport(ruleContext,
+				pmdConfiguration.getInputPaths());
+		SourceCodeProcessor processor = new SourceCodeProcessor(
+				pmdConfiguration);
+
+		RuleSets ruleSets = null;
+		try {
+			RuleSetFactory ruleSetFactory = new RuleSetFactory();
+			ruleSets = ruleSetFactory.createRuleSets("java-ali-pmd");// ,vm-ali-other
+			ruleSets.start(ruleContext);
+
+			ruleContext.setLanguageVersion(null);
+			String content = Files.toString(file.getRawLocation().toFile(), Charset.forName(file.getCharset()));
+			if (!GeneratedCodeUtils.isGenerated(content)) {
+				processor.processSourceCode(new StringReader(content), ruleSets,
+						ruleContext);
+			}
+		} catch (IOException e) {
+			e.printStackTrace();
+		} catch (CoreException e) {
+			e.printStackTrace();
+		} catch (RuleSetNotFoundException e) {
+			e.printStackTrace();
+		} catch (PMDException e) {
+			e.printStackTrace();
+		} finally {
+			if (ruleSets != null) {
+				ruleSets.end(ruleContext);
+			}
+		}
+		return report;
+	}
+
+	private boolean preCommit() {
+		Set<IFile> toBeChecked = getStagedFile();
+		Report allReport = new Report();
+		for (IFile iResource : toBeChecked) {
+			Report report = checkStagedFile(iResource);
+			allReport.merge(report);
+		}
+		Iterator<RuleViolation> reportIterator = allReport.iterator();
+		if (reportIterator.hasNext()) {
+			StringBuffer sb = new StringBuffer();
+			for (RuleViolation ruleViolation : allReport) {
+				sb.append("【")
+						.append(ruleViolation.getRule().getPriority().getName())
+						.append("】").append(ruleViolation.getClassName())
+						.append("[line:").append(ruleViolation.getBeginLine())
+						.append("]").append("\n")
+						.append(ruleViolation.getDescription()).append("\n\n");
+			}
+			MessageBox msg = new MessageBox(form.getShell(),
+					SWT.ERROR | SWT.OK);
+			msg.setText("代码存在如下问题，请修改后再提交");
+			msg.setMessage(sb.toString());
+			msg.open();
+
+			return false;
+		}
+		return true;
+	}
+
 	private void commit(boolean pushUpstream) {
+		if (!preCommit()) {
+			return;
+		}
+		
 		if (!isCommitWithoutFilesAllowed()) {
 			MessageDialog md = new MessageDialog(getSite().getShell(),
 					UIText.StagingView_committingNotPossible, null,
