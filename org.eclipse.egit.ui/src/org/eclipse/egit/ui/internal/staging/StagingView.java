@@ -35,6 +35,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -107,6 +109,7 @@ import org.eclipse.egit.ui.internal.operations.DeletePathsOperationUI;
 import org.eclipse.egit.ui.internal.operations.IgnoreOperationUI;
 import org.eclipse.egit.ui.internal.push.PushMode;
 import org.eclipse.egit.ui.internal.repository.tree.RepositoryTreeNode;
+import org.eclipse.egit.ui.internal.resources.IResourceState.StagingState;
 import org.eclipse.egit.ui.internal.selection.MultiViewerSelectionProvider;
 import org.eclipse.egit.ui.internal.selection.RepositorySelectionProvider;
 import org.eclipse.jface.action.Action;
@@ -203,6 +206,7 @@ import org.eclipse.swt.widgets.Composite;
 import org.eclipse.swt.widgets.Control;
 import org.eclipse.swt.widgets.Display;
 import org.eclipse.swt.widgets.Label;
+import org.eclipse.swt.widgets.MessageBox;
 import org.eclipse.swt.widgets.Text;
 import org.eclipse.swt.widgets.Tree;
 import org.eclipse.swt.widgets.TreeItem;
@@ -216,6 +220,7 @@ import org.eclipse.ui.IPartService;
 import org.eclipse.ui.ISelectionListener;
 import org.eclipse.ui.ISelectionService;
 import org.eclipse.ui.IURIEditorInput;
+import org.eclipse.ui.IViewPart;
 import org.eclipse.ui.IViewSite;
 import org.eclipse.ui.IWorkbenchPart;
 import org.eclipse.ui.IWorkbenchPartReference;
@@ -238,6 +243,12 @@ import org.eclipse.ui.part.ShowInContext;
 import org.eclipse.ui.part.ViewPart;
 import org.eclipse.ui.progress.IWorkbenchSiteProgressService;
 import org.eclipse.ui.progress.WorkbenchJob;
+
+import com.alibaba.smartfox.eclipse.job.CodeAnalysis;
+import com.alibaba.smartfox.eclipse.ui.InspectionResultView;
+import com.alibaba.smartfox.eclipse.ui.InspectionResults;
+import com.alibaba.smartfox.eclipse.ui.LevelViolations;
+
 
 /**
  * A GitX style staging view with embedded commit dialog.
@@ -4121,7 +4132,65 @@ public class StagingView extends ViewPart
 		return files;
 	}
 
+	private Set<IFile> getSelectedFile() {
+		TreeItem[] items = stagedViewer.getTree().getItems();
+		Set<IFile> stagedFileSet = new HashSet<>();
+		if (items != null && items.length > 0) {
+			for (TreeItem treeItem : items) {
+				StagingEntry stagingEntry = (StagingEntry) treeItem.getData();
+				if (!StagingState.REMOVED.equals(stagingEntry.getStagingState())) {
+					stagedFileSet.add(stagingEntry.getFile());
+				}
+			}
+		}
+		return stagedFileSet;
+	}
+	
+	private MessageBox createMessageBox(String title, String content) {
+		MessageBox msg = new MessageBox(form.getShell(), SWT.ERROR | SWT.OK);
+		msg.setText(title);
+		msg.setMessage(content);
+		return msg;
+	}
+
+	/**
+	 * check pre-commit files.
+	 * 
+	 * @return if check not pass,return false.
+	 */
+	private boolean preCommitCheck() {
+		Set<IFile> toBeCommitedFiles = getSelectedFile();
+		CountDownLatch cdl = new CountDownLatch(1);
+		Job.getJobManager().addJobChangeListener(new CodeAnalysisJobListener(cdl));
+		CodeAnalysis.INSTANCE.processResources(toBeCommitedFiles);
+		try {
+			cdl.await(5, TimeUnit.MINUTES);
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+		} 
+		String viewId = "com.alibaba.smartfox.eclipse.ui.InspectionResultView";
+		IViewPart part = getViewSite().getPage().findView(viewId);
+		if (part == null) {
+			createMessageBox("Plugin not found error", "Code check failed, please install alibaba code check plugin first!").open();
+			return false;
+		}
+		
+		InspectionResultView view = (InspectionResultView)part;
+		// get all elements in InspectionResultView
+		InspectionResults result = (InspectionResults)view.treeViewer.getInput();
+		List<LevelViolations> errors = result.getErrors();
+		if (errors != null && errors.size() > 0) {
+			// about [level]: see com.alibaba.smartfox.eclipse.pmd.RulePriority [Blocker, Critical, Major]
+			createMessageBox("Error", "Code check failed, please modify before submitting!").open();
+			return false;
+		}
+		return true;
+	}
+
 	private void commit(boolean pushUpstream) {
+		if (!preCommitCheck()) {
+			return;
+		}
 		if (!isCommitWithoutFilesAllowed()) {
 			MessageDialog md = new MessageDialog(getSite().getShell(),
 					UIText.StagingView_committingNotPossible, null,
