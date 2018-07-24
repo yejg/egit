@@ -5691,6 +5691,20 @@ public class UIText extends NLS {
 
 	/** */
 	public static String ProjectUtils_Invalid_ProjectFile;
+	
+	public static String StagingView_notFoundAliPlugin;
+
+	public static String StagingView_installAliFirst;
+
+	public static String StagingView_codeCheckNotPass;
+
+	public static String StagingView_codeCheckNotPassDesc;
+
+	public static String StagingView_fixOrForceCommitDesc;
+
+	public static String StagingView_fix;
+
+	public static String StagingView_forceCommit;
 
 	static {
 		initializeMessages(BUNDLE_NAME, UIText.class);

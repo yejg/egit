@@ -19,18 +19,23 @@
  *******************************************************************************/
 package org.eclipse.egit.ui.internal.dialogs;
 
+import java.io.File;
 import java.io.IOException;
+import java.net.URI;
 import java.text.MessageFormat;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Set;
 
 import org.eclipse.core.resources.IFile;
 import org.eclipse.core.resources.IMarker;
 import org.eclipse.core.resources.IResource;
+import org.eclipse.core.resources.IWorkspaceRoot;
+import org.eclipse.core.resources.ResourcesPlugin;
 import org.eclipse.core.runtime.Assert;
 import org.eclipse.core.runtime.CoreException;
 import org.eclipse.core.runtime.Path;
@@ -43,6 +48,7 @@ import org.eclipse.egit.ui.UIUtils;
 import org.eclipse.egit.ui.internal.CompareUtils;
 import org.eclipse.egit.ui.internal.UIIcons;
 import org.eclipse.egit.ui.internal.UIText;
+import org.eclipse.egit.ui.internal.cairh.CodeCheckUtil;
 import org.eclipse.egit.ui.internal.commit.CommitHelper;
 import org.eclipse.egit.ui.internal.commit.CommitMessageHistory;
 import org.eclipse.egit.ui.internal.commit.CommitProposalProcessor;
@@ -118,6 +124,7 @@ import org.eclipse.swt.widgets.ToolBar;
 import org.eclipse.swt.widgets.ToolItem;
 import org.eclipse.swt.widgets.Tree;
 import org.eclipse.swt.widgets.TreeColumn;
+import org.eclipse.swt.widgets.TreeItem;
 import org.eclipse.ui.ISharedImages;
 import org.eclipse.ui.IWorkbenchPage;
 import org.eclipse.ui.IWorkbenchWindow;
@@ -1370,9 +1377,40 @@ public class CommitDialog extends TitleAreaDialog {
 		}
 		return IProblemDecoratable.SEVERITY_NONE;
 	}
+	
+	private Set<IFile> getSelectedFile() {
+		Set<IFile> selectedFileSet = new HashSet<>();
+		IWorkspaceRoot root = ResourcesPlugin.getWorkspace().getRoot();
+		TreeItem[] items = filesViewer.getTree().getItems();
+		for (TreeItem treeItem : items) {
+			if (treeItem.getChecked()) {
+				CommitItem commitItem = (CommitItem) treeItem.getData();
+				if (!CommitItem.Status.REMOVED.equals(commitItem.status)) {
+					URI uri = new File(repository.getWorkTree(), commitItem.path).toURI();
+					IFile[] workspaceFiles = root.findFilesForLocationURI(uri);
+					if (workspaceFiles.length > 0) {
+						selectedFileSet.add(workspaceFiles[0]);
+					}
+				}
+			}
+		}
+		return selectedFileSet;
+	}
+	/**
+	 * check selected files.
+	 * @return if check not pass,return false.
+	 */
+	private boolean preOKPressed() {
+		Set<IFile> toBeCommitedFiles = getSelectedFile();
+		return CodeCheckUtil.checkCode(toBeCommitedFiles, filesViewer.getTree().getShell());
+	}
 
 	@Override
 	protected void okPressed() {
+		if (!preOKPressed()) {
+			this.close();// close commit dialog
+			return;
+		}
 		if (!isCommitWithoutFilesAllowed()) {
 			MessageDialog.openWarning(getShell(), UIText.CommitDialog_ErrorNoItemsSelected, UIText.CommitDialog_ErrorNoItemsSelectedToBeCommitted);
 			return;

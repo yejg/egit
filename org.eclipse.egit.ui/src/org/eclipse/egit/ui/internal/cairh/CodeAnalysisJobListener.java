@@ -1,4 +1,4 @@
-package org.eclipse.egit.ui.internal.staging;
+package org.eclipse.egit.ui.internal.cairh;
 
 import java.util.concurrent.CountDownLatch;
 
